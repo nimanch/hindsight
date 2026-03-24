@@ -126,6 +126,7 @@ _PROVIDERS_WITHOUT_API_KEY = frozenset(
         "claude-code",
         "mock",
         "vertexai",
+        "azure",
     }
 )
 
@@ -169,6 +170,7 @@ def create_llm_provider(
     from .llm_interface import LLMInterface
     from .providers import (
         AnthropicLLM,
+        AzureOpenAILLM,
         ClaudeCodeLLM,
         CodexLLM,
         GeminiLLM,
@@ -225,6 +227,33 @@ def create_llm_provider(
             base_url=base_url,
             model=model,
             reasoning_effort=reasoning_effort,
+        )
+
+    elif provider_lower == "azure":
+        # Get Azure-specific config
+        azure_endpoint = None
+        azure_api_version = "2024-12-01-preview"
+        azure_deployment_name = None
+        azure_use_entra_id = True
+        try:
+            from ..config import get_config
+            config = get_config()
+            azure_endpoint = getattr(config, "azure_endpoint", None)
+            azure_api_version = getattr(config, "azure_api_version", "2024-12-01-preview")
+            azure_deployment_name = getattr(config, "azure_deployment_name", None)
+            azure_use_entra_id = getattr(config, "azure_use_entra_id", True)
+        except Exception:
+            pass
+        return AzureOpenAILLM(
+            provider=provider,
+            api_key=api_key,
+            base_url=base_url,
+            model=model,
+            reasoning_effort=reasoning_effort,
+            azure_endpoint=azure_endpoint or base_url,
+            azure_api_version=azure_api_version,
+            azure_deployment_name=azure_deployment_name,
+            azure_use_entra_id=azure_use_entra_id,
         )
 
     elif provider_lower in ("openai", "groq", "ollama", "lmstudio", "minimax"):

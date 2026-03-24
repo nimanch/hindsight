@@ -257,6 +257,12 @@ ENV_LLM_VERTEXAI_PROJECT_ID = "HINDSIGHT_API_LLM_VERTEXAI_PROJECT_ID"
 ENV_LLM_VERTEXAI_REGION = "HINDSIGHT_API_LLM_VERTEXAI_REGION"
 ENV_LLM_VERTEXAI_SERVICE_ACCOUNT_KEY = "HINDSIGHT_API_LLM_VERTEXAI_SERVICE_ACCOUNT_KEY"
 
+# Azure OpenAI configuration
+ENV_LLM_AZURE_ENDPOINT = "HINDSIGHT_API_LLM_AZURE_ENDPOINT"
+ENV_LLM_AZURE_API_VERSION = "HINDSIGHT_API_LLM_AZURE_API_VERSION"
+ENV_LLM_AZURE_DEPLOYMENT_NAME = "HINDSIGHT_API_LLM_AZURE_DEPLOYMENT_NAME"
+ENV_LLM_AZURE_USE_ENTRA_ID = "HINDSIGHT_API_LLM_AZURE_USE_ENTRA_ID"
+
 # Gemini safety settings
 ENV_LLM_GEMINI_SAFETY_SETTINGS = "HINDSIGHT_API_LLM_GEMINI_SAFETY_SETTINGS"
 
@@ -376,6 +382,12 @@ DEFAULT_LLM_TIMEOUT = 120.0  # seconds
 DEFAULT_LLM_VERTEXAI_PROJECT_ID = None  # Required for Vertex AI
 DEFAULT_LLM_VERTEXAI_REGION = "us-central1"
 DEFAULT_LLM_VERTEXAI_SERVICE_ACCOUNT_KEY = None  # Optional, uses ADC if not set
+
+# Azure OpenAI defaults
+DEFAULT_LLM_AZURE_ENDPOINT = None  # Required for Azure provider
+DEFAULT_LLM_AZURE_API_VERSION = "2024-12-01-preview"
+DEFAULT_LLM_AZURE_DEPLOYMENT_NAME = None  # Falls back to model name
+DEFAULT_LLM_AZURE_USE_ENTRA_ID = True  # Entra ID auth is default (P0)
 
 # Gemini safety settings defaults
 DEFAULT_LLM_GEMINI_SAFETY_SETTINGS = None  # None = use Gemini default safety settings
@@ -624,6 +636,12 @@ class HindsightConfig:
 
     # Gemini safety settings (None = use Gemini defaults; list of dicts with category/threshold)
     llm_gemini_safety_settings: list | None
+
+    # Azure OpenAI configuration
+    azure_endpoint: str | None
+    azure_api_version: str
+    azure_deployment_name: str | None
+    azure_use_entra_id: bool
 
     # Per-operation LLM configuration (None = use default LLM config)
     retain_llm_provider: str | None
@@ -996,6 +1014,11 @@ class HindsightConfig:
             llm_vertexai_region=os.getenv(ENV_LLM_VERTEXAI_REGION, DEFAULT_LLM_VERTEXAI_REGION),
             llm_vertexai_service_account_key=os.getenv(ENV_LLM_VERTEXAI_SERVICE_ACCOUNT_KEY)
             or DEFAULT_LLM_VERTEXAI_SERVICE_ACCOUNT_KEY,
+            # Azure OpenAI
+            azure_endpoint=os.getenv(ENV_LLM_AZURE_ENDPOINT) or DEFAULT_LLM_AZURE_ENDPOINT,
+            azure_api_version=os.getenv(ENV_LLM_AZURE_API_VERSION, DEFAULT_LLM_AZURE_API_VERSION),
+            azure_deployment_name=os.getenv(ENV_LLM_AZURE_DEPLOYMENT_NAME) or DEFAULT_LLM_AZURE_DEPLOYMENT_NAME,
+            azure_use_entra_id=os.getenv(ENV_LLM_AZURE_USE_ENTRA_ID, str(DEFAULT_LLM_AZURE_USE_ENTRA_ID)).lower() in ("true", "1", "yes"),
             # Gemini safety settings (JSON-encoded list of {category, threshold} dicts)
             llm_gemini_safety_settings=json.loads(os.getenv(ENV_LLM_GEMINI_SAFETY_SETTINGS, "null")),
             # Per-operation LLM config (None = use default)
