@@ -104,14 +104,44 @@ class AzureOpenAILLM(LLMInterface):
 
         if self.azure_use_entra_id:
             try:
-                from azure.identity import DefaultAzureCredential, get_bearer_token_provider
+                from azure.identity import AzureCliCredential, DefaultAzureCredential
 
-                credential = DefaultAzureCredential()
-                token_provider = get_bearer_token_provider(
-                    credential, "https://cognitiveservices.azure.com/.default"
-                )
-                client_kwargs["azure_ad_token_provider"] = token_provider
-                logger.info("Azure OpenAI: Using Entra ID authentication (DefaultAzureCredential)")
+                tenant_id = os.getenv("AZURE_TENANT_ID")
+                scope = "https://cognitiveservices.azure.com/.default"
+
+                # Prefer AzureCliCredential with explicit tenant_id over DefaultAzureCredential.
+                # In WSL, DefaultAzureCredential's internal AzureCliCredential may fail because
+                # its subprocess call to z uses env=dict(os.environ, ...) which can break
+                # if python-dotenv has overwritten PATH with unexpanded shell variables.
+                # Using AzureCliCredential directly with get_token() at init time avoids this
+                # because we validate auth eagerly before any async context is involved.
+                token = None
+                if tenant_id:
+                    try:
+                        cli_cred = AzureCliCredential(tenant_id=tenant_id)
+                        token = cli_cred.get_token(scope)
+                        self._azure_credential = cli_cred
+                        self._azure_scope = scope
+                        logger.info(
+                            "Azure OpenAI: Entra ID auth via AzureCliCredential (tenant=%s)",
+                            tenant_id,
+                        )
+                    except Exception as e:
+                        logger.warning("AzureCliCredential failed, trying DefaultAzureCredential: %s", e)
+
+                if token is None:
+                    default_cred = DefaultAzureCredential()
+                    token = default_cred.get_token(scope)
+                    self._azure_credential = default_cred
+                    self._azure_scope = scope
+                    logger.info("Azure OpenAI: Entra ID auth via DefaultAzureCredential")
+
+                # Use a token provider that refreshes via stored credential
+                def _get_token():
+                    t = self._azure_credential.get_token(self._azure_scope)
+                    return t.token
+
+                client_kwargs["azure_ad_token_provider"] = _get_token
             except ImportError:
                 raise ImportError(
                     "azure-identity package is required for Entra ID authentication. "

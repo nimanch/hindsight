@@ -40,6 +40,28 @@ A complete guide to building Hindsight from source, configuring it with Azure AI
 
 ---
 
+## ⚠️ Critical: `.env` File Syntax
+
+The `.env` file is loaded by **python-dotenv**, NOT by bash. This means:
+
+- **Do NOT use `export`** — write `KEY=value`, not `export KEY=value`
+- **Do NOT use shell variable expansion** — `$PATH`, `$HOME`, `$(command)` are treated as **literal strings**
+- **Do NOT put `PATH=...` in `.env`** — it will overwrite your system PATH and break `az` CLI, `bash`, and other tools
+
+If you need to modify PATH (e.g., to make Windows `az` CLI available in WSL), do it in `run_flask.sh` instead.
+
+**Wrong** (in `.env`):
+```
+export PATH="$PATH:/mnt/c/Program Files/Microsoft SDKs/Azure/CLI2/wbin"
+```
+
+**Right** (in `run_flask.sh`):
+```bash
+export PATH="/mnt/c/Program Files/Microsoft SDKs/Azure/CLI2/wbin:$PATH"
+```
+
+---
+
 ## Prerequisites
 
 | Requirement | Version | Notes |
@@ -243,40 +265,45 @@ vi .env   # or: code .env
 
 **Minimum required `.env` for Azure:**
 
-```bash
+```ini
 # Provider
-export HINDSIGHT_API_LLM_PROVIDER=azure
-export HINDSIGHT_API_LLM_MODEL=gpt-4o
+HINDSIGHT_API_LLM_PROVIDER=azure
+HINDSIGHT_API_LLM_MODEL=gpt-4o
 
 # Azure endpoint
-export HINDSIGHT_API_LLM_AZURE_ENDPOINT=https://your-resource.cognitiveservices.azure.com/
+HINDSIGHT_API_LLM_AZURE_ENDPOINT=https://your-resource.cognitiveservices.azure.com/
 
 # Auth (Entra ID)
-export HINDSIGHT_API_LLM_AZURE_USE_ENTRA_ID=true
-# export AZURE_TENANT_ID=<if-cross-tenant>
+HINDSIGHT_API_LLM_AZURE_USE_ENTRA_ID=true
+# AZURE_TENANT_ID=<if-cross-tenant>
 
 # Token limits (Azure gpt-4o = 16384 max)
-export HINDSIGHT_API_RETAIN_MAX_COMPLETION_TOKENS=16000
+HINDSIGHT_API_RETAIN_MAX_COMPLETION_TOKENS=16000
 
 # Database (embedded, zero setup)
-export HINDSIGHT_API_DATABASE_URL=pg0
+HINDSIGHT_API_DATABASE_URL=pg0
 
 # Flask
-export FLASK_PORT=5001
-
-# WSL: ensure az CLI is on PATH
-export PATH="$PATH:/mnt/c/Program Files/Microsoft SDKs/Azure/CLI2/wbin"
+FLASK_PORT=5001
 ```
+
+> **Note:** Do NOT add `PATH=...` to `.env` — see [⚠️ Critical: `.env` File Syntax](#️-critical-env-file-syntax).
+> For WSL PATH configuration (e.g., Windows `az` CLI), edit `run_flask.sh` instead.
 
 ### 2. Start the Flask Bridge
 
-```bash
-# Load environment
-source .env
+The recommended way to start the Flask bridge is via the provided script:
 
-# Start the server
-uv run --package hindsight-dev python hindsight-dev/benchmarks/longmemeval/flask_app.py
+```bash
+bash run_flask.sh
 ```
+
+This script:
+- Adds Windows `az` CLI to PATH (for WSL environments)
+- Verifies Azure CLI is installed and logged in
+- Starts the Flask bridge with `uv run`
+
+Configuration is read from `.env` by python-dotenv at startup.
 
 You should see:
 ```
@@ -550,8 +577,7 @@ End-to-end test of init → index → retrieve → answer. Takes ~10 minutes.
 
 ```bash
 # Terminal 1: Start the server
-source .env
-uv run --package hindsight-dev python hindsight-dev/benchmarks/longmemeval/flask_app.py
+bash run_flask.sh
 
 # Terminal 2: Run the test sequence
 # Step 1: Initialize
@@ -622,14 +648,14 @@ curl -s -X POST http://localhost:5001/api/benchmark/run \
 You can also run the benchmark directly (without the Flask bridge):
 
 ```bash
-source .env
+bash run_flask.sh  # or: source .env if not using the Flask bridge
 ./scripts/benchmarks/run-longmemeval.sh --max-instances 10
 ```
 
 Or with Python directly:
 
 ```bash
-source .env
+bash run_flask.sh  # or: source .env if not using the Flask bridge
 uv run python hindsight-dev/benchmarks/longmemeval/longmemeval_benchmark.py \
   --max-instances 10 \
   --context-format json
@@ -774,17 +800,31 @@ az account set -s "<subscription>"
 export AZURE_TENANT_ID=<resource-tenant-id>
 ```
 
-### "Azure CLI not found on path"
+### `AzureCliCredential: Azure CLI not found on path`
 
-`DefaultAzureCredential` can't find `az`. In WSL:
+**Cause:** The `.env` file may contain a `PATH=...` line that overwrites your system PATH when loaded by python-dotenv. Or `az` CLI is genuinely not installed.
+
+**Fix:**
+1. Remove any `PATH=...` or `export PATH=...` lines from `.env`
+2. Remove `export` prefixes from all `.env` entries (use `KEY=value` format)
+3. For PATH modifications, edit `run_flask.sh` instead
+4. Ensure `az` CLI is accessible: `which az` should return a path
+
+If `az` is not installed at all:
 
 ```bash
-# Option 1: Use Windows az CLI
-export PATH="$PATH:/mnt/c/Program Files/Microsoft SDKs/Azure/CLI2/wbin"
+# Option 1: Use Windows az CLI (via run_flask.sh — already configured)
+bash run_flask.sh
 
 # Option 2: Install az CLI natively in WSL
 curl -sL https://aka.ms/InstallAzureCLIDeb | sudo bash
 ```
+
+### `bash: No such file or directory` during Azure authentication
+
+**Cause:** Same as above — a `PATH=...` line in `.env` replaced your system PATH, removing `/usr/bin` and `/bin`.
+
+**Fix:** Same as above — remove `PATH` from `.env`, use `run_flask.sh` for PATH config.
 
 ### "max_tokens is too large: 32768"
 
