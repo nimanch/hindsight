@@ -9,7 +9,7 @@ A complete guide to building Hindsight from source, configuring it with Azure AI
 - [Prerequisites](#prerequisites)
 - [Build from Source](#build-from-source)
   - [1. Install System Dependencies](#1-install-system-dependencies)
-  - [2. Clone the Repository](#2-clone-the-repository)
+  - [2. Fork and Clone the Repository](#2-fork-and-clone-the-repository)
   - [3. Install Python Dependencies](#3-install-python-dependencies)
   - [4. Verify the Build](#4-verify-the-build)
 - [Azure Setup](#azure-setup)
@@ -83,15 +83,16 @@ sudo apt install -y build-essential libffi-dev libssl-dev
 sudo apt install -y git curl
 ```
 
-### 2. Clone the Repository
+### 2. Fork and Clone the Repository
 
 ```bash
-# Create a workspace directory
-mkdir -p ~/repos && cd ~/repos
-
-# Clone from GitHub
-git clone https://github.com/vectorize-io/hindsight.git
+# Fork the repository on GitHub (requires GitHub CLI)
+gh repo fork vectorize-io/hindsight --clone=true -- --depth=1
 cd hindsight
+
+# Or, if you've already forked, clone your fork directly
+# git clone https://github.com/<your-github-username>/hindsight.git
+# cd hindsight
 
 # Switch to the Azure feature branch
 git checkout feature/azure-foundry-openai
