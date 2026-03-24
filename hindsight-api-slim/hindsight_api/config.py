@@ -370,6 +370,7 @@ PROVIDER_DEFAULT_MODELS = {
     "openai-codex": "gpt-5.2-codex",
     "claude-code": "claude-sonnet-4-5-20250929",
     "mock": "mock-model",
+    "azure": "gpt-4o",
 }
 DEFAULT_LLM_MODEL = "gpt-4o-mini"  # Fallback if provider not in table
 DEFAULT_LLM_MAX_CONCURRENT = 32

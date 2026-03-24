@@ -326,6 +326,7 @@ class LLMProvider:
             "claude-code",
             "mock",
             "minimax",
+            "azure",
         ]
         if self.provider not in valid_providers:
             raise ValueError(f"Invalid LLM provider: {self.provider}. Must be one of: {', '.join(valid_providers)}")
@@ -705,7 +706,7 @@ class LLMProvider:
 
         # API key not needed for openai-codex (uses OAuth), claude-code (uses Keychain OAuth),
         # ollama (local), or vertexai (uses GCP service account credentials)
-        if not api_key and provider not in ("openai-codex", "claude-code", "ollama", "vertexai"):
+        if not api_key and provider not in ("openai-codex", "claude-code", "ollama", "vertexai", "azure"):
             raise ValueError(
                 "HINDSIGHT_API_LLM_API_KEY environment variable is required (unless using openai-codex or claude-code)"
             )
@@ -723,7 +724,7 @@ class LLMProvider:
 
         # API key not needed for openai-codex (uses OAuth), claude-code (uses Keychain OAuth),
         # ollama (local), or vertexai (uses GCP service account credentials)
-        if not api_key and provider not in ("openai-codex", "claude-code", "ollama", "vertexai"):
+        if not api_key and provider not in ("openai-codex", "claude-code", "ollama", "vertexai", "azure"):
             raise ValueError(
                 "HINDSIGHT_API_LLM_API_KEY or HINDSIGHT_API_ANSWER_LLM_API_KEY environment variable is required "
                 "(unless using openai-codex or claude-code)"
@@ -742,7 +743,7 @@ class LLMProvider:
 
         # API key not needed for openai-codex (uses OAuth), claude-code (uses Keychain OAuth),
         # ollama (local), or vertexai (uses GCP service account credentials)
-        if not api_key and provider not in ("openai-codex", "claude-code", "ollama", "vertexai"):
+        if not api_key and provider not in ("openai-codex", "claude-code", "ollama", "vertexai", "azure"):
             raise ValueError(
                 "HINDSIGHT_API_LLM_API_KEY or HINDSIGHT_API_JUDGE_LLM_API_KEY environment variable is required "
                 "(unless using openai-codex or claude-code)"

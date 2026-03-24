@@ -179,6 +179,11 @@ class AzureOpenAILLM(LLMInterface):
         if max_completion_tokens is not None:
             if is_reasoning_model and max_completion_tokens < 16000:
                 max_completion_tokens = 16000
+            # Azure deployments have lower completion token limits (e.g. 16384)
+            azure_max = int(__import__("os").getenv("HINDSIGHT_API_LLM_AZURE_MAX_COMPLETION_TOKENS", "16384"))
+            if max_completion_tokens > azure_max:
+                logger.info(f"Capping max_completion_tokens from {max_completion_tokens} to {azure_max} (Azure limit)")
+                max_completion_tokens = azure_max
             call_params["max_completion_tokens"] = max_completion_tokens
 
         if temperature is not None and not is_reasoning_model:
@@ -366,6 +371,9 @@ class AzureOpenAILLM(LLMInterface):
         }
 
         if max_completion_tokens is not None:
+            azure_max = int(__import__("os").getenv("HINDSIGHT_API_LLM_AZURE_MAX_COMPLETION_TOKENS", "16384"))
+            if max_completion_tokens > azure_max:
+                max_completion_tokens = azure_max
             call_params["max_completion_tokens"] = max_completion_tokens
         if temperature is not None:
             call_params["temperature"] = temperature
