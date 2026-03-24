@@ -1,20 +1,24 @@
-# Azure Foundry OpenAI + LongMemEval Benchmark Guide
+# Azure Foundry OpenAI + Hindsight: Setup, API & E2E Testing Guide
 
-This guide covers setting up Hindsight with Azure AI Foundry (Azure OpenAI) endpoints and running the LongMemEval benchmark via the Flask bridge application.
+A complete guide to building Hindsight from source, configuring it with Azure AI Foundry (Azure OpenAI) endpoints, and running the LongMemEval benchmark via the Flask bridge application.
 
 ---
 
 ## Table of Contents
 
 - [Prerequisites](#prerequisites)
+- [Build from Source](#build-from-source)
+  - [1. Install System Dependencies](#1-install-system-dependencies)
+  - [2. Clone the Repository](#2-clone-the-repository)
+  - [3. Install Python Dependencies](#3-install-python-dependencies)
+  - [4. Verify the Build](#4-verify-the-build)
 - [Azure Setup](#azure-setup)
   - [1. Azure AI Foundry Resource](#1-azure-ai-foundry-resource)
   - [2. Deploy a Model](#2-deploy-a-model)
   - [3. Authentication](#3-authentication)
-- [Hindsight Server Setup](#hindsight-server-setup)
-  - [1. Clone and Install](#1-clone-and-install)
-  - [2. Configure Environment](#2-configure-environment)
-  - [3. Start the Flask Bridge](#3-start-the-flask-bridge)
+- [Configure and Run](#configure-and-run)
+  - [1. Create Environment File](#1-create-environment-file)
+  - [2. Start the Flask Bridge](#2-start-the-flask-bridge)
 - [Flask Bridge API Reference](#flask-bridge-api-reference)
   - [POST /api/init](#post-apiinit)
   - [GET /api/health](#get-apihealth)
@@ -26,21 +30,129 @@ This guide covers setting up Hindsight with Azure AI Foundry (Azure OpenAI) endp
   - [POST /api/benchmark/run](#post-apibenchmarkrun)
 - [Running E2E Tests](#running-e2e-tests)
   - [Quick Smoke Test (1 item)](#quick-smoke-test-1-item)
-  - [Category Test (10 items)](#category-test-10-items)
+  - [Category Test](#category-test)
   - [Full Benchmark (500 items)](#full-benchmark-500-items)
+  - [Using the Built-in Benchmark Script](#using-the-built-in-benchmark-script)
 - [Changing Azure Endpoints](#changing-azure-endpoints)
 - [Environment Variables Reference](#environment-variables-reference)
+- [Project Structure](#project-structure)
 - [Troubleshooting](#troubleshooting)
 
 ---
 
 ## Prerequisites
 
-- **WSL (Windows Subsystem for Linux)** — Hindsight requires Linux; it does not run well on native Windows
-- **Python 3.11+**
-- **uv** package manager (`curl -LsSf https://astral.sh/uv/install.sh | sh`)
-- **Azure CLI** (`az`) — for Entra ID authentication
-- An **Azure AI Foundry** or **Azure OpenAI** resource with a deployed model
+| Requirement | Version | Notes |
+|-------------|---------|-------|
+| **WSL 2** (Ubuntu) | Ubuntu 22.04+ | Hindsight uses embedded PostgreSQL (pg0) which requires Linux |
+| **Python** | 3.11+ | Required by Hindsight |
+| **uv** | latest | Python package/workspace manager from Astral |
+| **Azure CLI** | 2.60+ | For Entra ID authentication |
+| **Git** | 2.25+ | For cloning the repository |
+| **curl** | any | For downloading the LongMemEval dataset |
+
+### Windows Users
+
+All commands must be run **inside WSL**. Open a WSL terminal:
+
+```powershell
+# From PowerShell / Windows Terminal
+wsl
+```
+
+The repo will live in WSL's filesystem (e.g., `/home/<user>/repos/hindsight`).
+To browse from Windows Explorer, navigate to: `\\wsl$\Ubuntu\home\<user>\repos\hindsight`
+
+---
+
+## Build from Source
+
+### 1. Install System Dependencies
+
+```bash
+# Update package lists
+sudo apt update
+
+# Python 3.11+ (Ubuntu 22.04 ships 3.10, you may need deadsnakes PPA)
+sudo apt install -y python3.11 python3.11-venv python3.11-dev
+
+# Build tools (needed for some Python packages)
+sudo apt install -y build-essential libffi-dev libssl-dev
+
+# Git
+sudo apt install -y git curl
+```
+
+### 2. Clone the Repository
+
+```bash
+# Create a workspace directory
+mkdir -p ~/repos && cd ~/repos
+
+# Clone from GitHub
+git clone https://github.com/vectorize-io/hindsight.git
+cd hindsight
+
+# Switch to the Azure feature branch
+git checkout feature/azure-foundry-openai
+```
+
+### 3. Install Python Dependencies
+
+Hindsight uses [uv](https://docs.astral.sh/uv/) as its workspace manager. Install it first:
+
+```bash
+# Install uv
+curl -LsSf https://astral.sh/uv/install.sh | sh
+
+# Add to PATH (or restart shell)
+export PATH="$HOME/.local/bin:$PATH"
+```
+
+Now install all dependencies. The workspace has multiple packages — you need `hindsight-dev` which pulls in everything:
+
+```bash
+# Install all workspace packages and their dependencies
+# This downloads Python packages, builds native extensions, and sets up the venv
+uv sync --package hindsight-dev
+
+# This installs:
+#   hindsight-api-slim  - Core API (FastAPI, LLM providers, memory engine)
+#   hindsight-all       - Server, embedded client (HindsightEmbedded)
+#   hindsight-dev       - Dev tools, benchmarks, Flask bridge
+#   hindsight-embed     - Embedded PostgreSQL (pg0) daemon
+#   + azure-identity    - Azure Entra ID authentication
+#   + flask             - Flask web framework for the bridge app
+```
+
+**Note:** The first `uv sync` may take a few minutes. It downloads PyTorch (CPU), sentence-transformers, and other ML dependencies (~2GB total).
+
+### 4. Verify the Build
+
+```bash
+# Verify core imports work
+uv run --package hindsight-dev python -c "
+from hindsight_api.engine.providers.azure_openai_llm import AzureOpenAILLM
+from hindsight_api.config import HindsightConfig
+from benchmarks.longmemeval.flask_app import create_app
+print('Build verified successfully!')
+print(f'  AzureOpenAILLM: OK')
+print(f'  HindsightConfig: OK')
+print(f'  Flask app: OK')
+app = create_app()
+routes = [r.rule for r in app.url_map.iter_rules() if not r.rule.startswith('/static')]
+print(f'  Routes: {len(routes)} endpoints registered')
+"
+```
+
+Expected output:
+```
+Build verified successfully!
+  AzureOpenAILLM: OK
+  HindsightConfig: OK
+  Flask app: OK
+  Routes: 8 endpoints registered
+```
 
 ---
 
@@ -54,14 +166,9 @@ You need an Azure AI Foundry (or Azure OpenAI) resource. Your endpoint URL will 
 https://<your-resource-name>.cognitiveservices.azure.com/
 ```
 
-or for older Azure OpenAI resources:
-
-```
-https://<your-resource-name>.openai.azure.com/
-```
-
 To find your endpoint:
 ```bash
+# List all cognitive services resources
 az cognitiveservices account list \
   --query "[].{name:name, endpoint:properties.endpoint}" \
   -o table
@@ -69,50 +176,47 @@ az cognitiveservices account list \
 
 ### 2. Deploy a Model
 
-Deploy a model (e.g., `gpt-4o`) in your Azure AI Foundry resource. The **deployment name** is what Hindsight uses to route API calls.
+Deploy a model (e.g., `gpt-4o`) in your Azure AI Foundry resource:
 
-- If your deployment name matches the model name (e.g., both are `gpt-4o`), no extra config is needed
-- If they differ, set `HINDSIGHT_API_LLM_AZURE_DEPLOYMENT_NAME` to your deployment name
+1. Go to [Azure AI Foundry](https://ai.azure.com) or [Azure Portal](https://portal.azure.com)
+2. Navigate to your resource → **Model deployments** → **Deploy model**
+3. Choose `gpt-4o` (or your preferred model)
+4. Note the **deployment name** (defaults to the model name)
 
-**Important:** Azure gpt-4o deployments typically support a maximum of **16,384 completion tokens** (vs 64,000 on OpenAI). Hindsight's Azure provider automatically caps `max_completion_tokens` to 16,384. Override with `HINDSIGHT_API_LLM_AZURE_MAX_COMPLETION_TOKENS` if your deployment supports more.
+**Important:** Azure gpt-4o deployments typically support max **16,384 completion tokens** (vs 64,000 on OpenAI direct). The Azure provider auto-caps this, but you must also set `HINDSIGHT_API_RETAIN_MAX_COMPLETION_TOKENS=16000`.
 
 ### 3. Authentication
 
-Two authentication methods are supported:
-
 #### Option A: Entra ID (Recommended)
 
-Uses `DefaultAzureCredential` from the Azure Identity SDK. This is the default and recommended method for enterprise use.
+Uses `DefaultAzureCredential` — works with `az login`, managed identities, and service principals.
 
 ```bash
-# Login to Azure CLI with the correct tenant
+# Login to Azure CLI
 az login --tenant <your-tenant-id>
 
-# Set the subscription containing your resource
+# Set your subscription
 az account set -s "<subscription-name>"
 
-# Verify you can get a token for cognitive services
-az account get-access-token --resource https://cognitiveservices.azure.com --query tenant -o tsv
+# Verify token works for cognitive services
+az account get-access-token \
+  --resource https://cognitiveservices.azure.com \
+  --query tenant -o tsv
 ```
 
-**Cross-tenant note:** If your Azure CLI is logged into a different tenant than your resource, set:
+**Cross-tenant note:** If your resource is in a different Azure AD tenant, set:
 ```bash
-export AZURE_TENANT_ID=<tenant-id-of-your-resource>
-```
-
-Ensure the `az` CLI is on your PATH inside the Python environment. In WSL, you may need:
-```bash
-export PATH="$PATH:/mnt/c/Program Files/Microsoft SDKs/Azure/CLI2/wbin"
+export AZURE_TENANT_ID=<tenant-id-where-resource-lives>
 ```
 
 #### Option B: API Key
 
 ```bash
 export HINDSIGHT_API_LLM_AZURE_USE_ENTRA_ID=false
-export HINDSIGHT_API_LLM_API_KEY=<your-azure-api-key>
+export HINDSIGHT_API_LLM_API_KEY=<your-api-key>
 ```
 
-Find your API key:
+Get your key:
 ```bash
 az cognitiveservices account keys list \
   --name <resource-name> \
@@ -122,92 +226,79 @@ az cognitiveservices account keys list \
 
 ---
 
-## Hindsight Server Setup
+## Configure and Run
 
-### 1. Clone and Install
-
-```bash
-# Clone the repository
-git clone https://github.com/vectorize-io/hindsight.git
-cd hindsight
-
-# Checkout the Azure feature branch
-git checkout feature/azure-foundry-openai
-
-# Install dependencies (uv manages the Python workspace)
-uv sync --package hindsight-dev
-```
-
-### 2. Configure Environment
-
-Copy the example environment file and edit it:
+### 1. Create Environment File
 
 ```bash
+cd ~/repos/hindsight
+
+# Copy the template
 cp .env.azure.example .env
+
+# Edit with your values
+vi .env   # or: code .env
 ```
 
-Edit `.env` with your values:
+**Minimum required `.env` for Azure:**
 
 ```bash
-# Required: Azure provider settings
+# Provider
 export HINDSIGHT_API_LLM_PROVIDER=azure
 export HINDSIGHT_API_LLM_MODEL=gpt-4o
+
+# Azure endpoint
 export HINDSIGHT_API_LLM_AZURE_ENDPOINT=https://your-resource.cognitiveservices.azure.com/
 
-# Authentication (Entra ID is default)
+# Auth (Entra ID)
 export HINDSIGHT_API_LLM_AZURE_USE_ENTRA_ID=true
+# export AZURE_TENANT_ID=<if-cross-tenant>
 
-# Cross-tenant auth (if needed)
-export AZURE_TENANT_ID=<tenant-id-of-your-resource>
-
-# Azure gpt-4o max completion tokens (default: 16384)
+# Token limits (Azure gpt-4o = 16384 max)
 export HINDSIGHT_API_RETAIN_MAX_COMPLETION_TOKENS=16000
 
-# Database: pg0 = embedded PostgreSQL (zero setup)
+# Database (embedded, zero setup)
 export HINDSIGHT_API_DATABASE_URL=pg0
 
-# Flask port
+# Flask
 export FLASK_PORT=5001
 
-# Ensure az CLI is on PATH (WSL)
+# WSL: ensure az CLI is on PATH
 export PATH="$PATH:/mnt/c/Program Files/Microsoft SDKs/Azure/CLI2/wbin"
 ```
 
-### 3. Start the Flask Bridge
+### 2. Start the Flask Bridge
 
 ```bash
-# Source your environment
+# Load environment
 source .env
 
-# Start the Flask bridge server
+# Start the server
 uv run --package hindsight-dev python hindsight-dev/benchmarks/longmemeval/flask_app.py
 ```
 
 You should see:
-
 ```
 ╔══════════════════════════════════════════════════════════════╗
 ║        LongMemEval ↔ Hindsight Flask Bridge                 ║
-╠══════════════════════════════════════════════════════════════╣
 ║  Provider : azure                                           ║
 ║  Model    : gpt-4o                                          ║
-║  Azure EP : https://your-resource.cognitiveservices.azure.com/║
-║  Entra ID : true                                            ║
 ║  Port     : 5001                                            ║
 ╚══════════════════════════════════════════════════════════════╝
+ * Running on http://127.0.0.1:5001
 ```
 
 ---
 
 ## Flask Bridge API Reference
 
-The Flask bridge exposes 8 endpoints that wrap Hindsight's memory engine for LongMemEval benchmarking.
+All endpoints accept and return JSON. Base URL: `http://localhost:5001`
 
 ### POST /api/init
 
-Initialize the Hindsight memory engine. **Must be called before any other operation.**
+**Initialize the memory engine.** Must be called once before any other operation.
 
-Starts the embedded PostgreSQL database (pg0), loads the LongMemEval dataset, and verifies Azure OpenAI connectivity.
+Starts pg0 (embedded PostgreSQL), creates the LLM provider, downloads and loads the LongMemEval dataset (500 items), and verifies Azure OpenAI connectivity.
 
 ```bash
 curl -X POST http://localhost:5001/api/init \
@@ -228,7 +319,7 @@ curl -X POST http://localhost:5001/api/init \
 
 ### GET /api/health
 
-Health check with LLM connectivity status.
+**Health check** with provider info and dataset status.
 
 ```bash
 curl http://localhost:5001/api/health
@@ -251,7 +342,7 @@ curl http://localhost:5001/api/health
 
 ### GET /api/dataset/info
 
-Statistics about the loaded LongMemEval dataset.
+**Dataset statistics** — item counts by category.
 
 ```bash
 curl http://localhost:5001/api/dataset/info
@@ -269,8 +360,6 @@ curl http://localhost:5001/api/dataset/info
     "temporal-reasoning": 133,
     "knowledge-update": 78
   },
-  "sample_item_id": "e47becba",
-  "sample_num_sessions": 53,
   "ingested_banks": 0
 }
 ```
@@ -279,7 +368,7 @@ curl http://localhost:5001/api/dataset/info
 
 ### GET /api/dataset/item/\<id\>
 
-Details for a specific dataset item, including its QA pairs.
+**Single item details** including QA pairs and session metadata.
 
 ```bash
 curl http://localhost:5001/api/dataset/item/e47becba
@@ -296,8 +385,7 @@ curl http://localhost:5001/api/dataset/item/e47becba
     {
       "question": "What degree did I graduate with?",
       "answer": "Business Administration",
-      "category": "single-session-user",
-      "question_date": "Tue, 30 May 2023 00:00:00 GMT"
+      "category": "single-session-user"
     }
   ],
   "bank_id": "longmemeval_e47becba",
@@ -309,27 +397,20 @@ curl http://localhost:5001/api/dataset/item/e47becba
 
 ### POST /api/index
 
-Ingest LongMemEval sessions into Hindsight memory banks via `retain_batch_async()`.
-
-Each dataset item's conversation sessions are extracted, chunked, and stored as facts in a dedicated memory bank (`longmemeval_<question_id>`).
+**Ingest LongMemEval sessions** into Hindsight memory banks. Each item's conversation sessions are processed through the LLM for fact extraction and stored in a dedicated bank.
 
 ```bash
-# Index all 500 items
+# Index specific items
 curl -X POST http://localhost:5001/api/index \
   -H "Content-Type: application/json" \
-  -d '{}'
+  -d '{"question_ids": ["e47becba"]}'
 
-# Index first 5 items only
+# Index first N items
 curl -X POST http://localhost:5001/api/index \
   -H "Content-Type: application/json" \
   -d '{"max_items": 5}'
 
-# Index specific items by question ID
-curl -X POST http://localhost:5001/api/index \
-  -H "Content-Type: application/json" \
-  -d '{"question_ids": ["e47becba", "a1b2c3d4"]}'
-
-# Force re-index (clears existing data first)
+# Force re-index (clears existing data)
 curl -X POST http://localhost:5001/api/index \
   -H "Content-Type: application/json" \
   -d '{"question_ids": ["e47becba"], "force": true}'
@@ -337,8 +418,8 @@ curl -X POST http://localhost:5001/api/index \
 
 | Parameter | Type | Default | Description |
 |-----------|------|---------|-------------|
-| `max_items` | int | all | Maximum dataset items to ingest |
-| `question_ids` | list | all | Specific question IDs to ingest |
+| `max_items` | int | all | Maximum items to ingest |
+| `question_ids` | list[str] | all | Specific question IDs to ingest |
 | `force` | bool | false | Re-ingest even if already done |
 
 **Response:**
@@ -346,25 +427,21 @@ curl -X POST http://localhost:5001/api/index \
 {
   "status": "completed",
   "items_processed": 1,
-  "items_skipped": 0,
   "total_sessions_ingested": 53,
   "elapsed_seconds": 490.08,
   "details": [
-    {
-      "item_id": "e47becba",
-      "bank_id": "longmemeval_e47becba",
-      "sessions_ingested": 53,
-      "status": "ok"
-    }
+    { "item_id": "e47becba", "sessions_ingested": 53, "status": "ok" }
   ]
 }
 ```
+
+**Note:** Indexing is the slowest step (~8 min per item with Azure gpt-4o). Data persists in pg0 across restarts — use `"skip_ingestion": true` in `/api/benchmark/run` to reuse indexed data.
 
 ---
 
 ### POST /api/retrieve
 
-Query a memory bank using Hindsight's `recall_async()` — semantic search + reranking + temporal filtering.
+**Query memories** using Hindsight's recall engine — semantic search, graph expansion, reranking, and temporal filtering.
 
 ```bash
 curl -X POST http://localhost:5001/api/retrieve \
@@ -372,31 +449,27 @@ curl -X POST http://localhost:5001/api/retrieve \
   -d '{
     "question": "What degree did I graduate with?",
     "question_id": "e47becba",
-    "question_date": "2023-05-30T00:00:00Z",
-    "budget": "mid",
-    "max_tokens": 8192
+    "question_date": "2023-05-30T00:00:00Z"
   }'
 ```
 
 | Parameter | Type | Default | Description |
 |-----------|------|---------|-------------|
-| `question` | str | **required** | The query text |
-| `question_id` | str | **required** | Dataset item ID (used as bank prefix) |
+| `question` | str | **required** | Query text |
+| `question_id` | str | **required** | Item ID (bank prefix) |
 | `question_date` | str | null | ISO-8601 date for temporal context |
-| `budget` | str | "mid" | Search depth: `low`, `mid`, or `high` |
-| `max_tokens` | int | 8192 | Maximum tokens to retrieve |
+| `budget` | str | `"mid"` | Search depth: `low` / `mid` / `high` |
+| `max_tokens` | int | 8192 | Max tokens to retrieve |
 
 **Response:**
 ```json
 {
   "status": "ok",
-  "bank_id": "longmemeval_e47becba",
-  "question": "What degree did I graduate with?",
   "num_results": 187,
   "num_entities": 400,
   "num_chunks": 17,
   "elapsed_seconds": 4.49,
-  "recall_result": { ... }
+  "recall_result": { "results": [...], "entities": {...}, "chunks": {...} }
 }
 ```
 
@@ -404,7 +477,7 @@ curl -X POST http://localhost:5001/api/retrieve \
 
 ### POST /api/answer
 
-Retrieve memories and generate an answer using the LLM (recall + answer generation pipeline).
+**Retrieve + generate answer.** Runs recall, then passes retrieved facts to the LLM for answer generation.
 
 ```bash
 curl -X POST http://localhost:5001/api/answer \
@@ -419,24 +492,23 @@ curl -X POST http://localhost:5001/api/answer \
 
 | Parameter | Type | Default | Description |
 |-----------|------|---------|-------------|
-| `question` | str | **required** | The query text |
-| `question_id` | str | **required** | Dataset item ID |
-| `question_date` | str | null | ISO-8601 date for temporal context |
-| `question_type` | str | null | Question category (for prompt tuning) |
-| `budget` | str | "mid" | Search depth |
+| `question` | str | **required** | Query text |
+| `question_id` | str | **required** | Item ID |
+| `question_date` | str | null | ISO-8601 date |
+| `question_type` | str | null | Category hint |
+| `budget` | str | `"mid"` | Search depth |
 | `max_tokens` | int | 8192 | Max recall tokens |
-| `context_format` | str | "json" | `json` or `structured` |
+| `context_format` | str | `"json"` | `json` or `structured` |
 
 **Response:**
 ```json
 {
   "status": "ok",
   "answer": "Business Administration",
-  "reasoning": "According to the retrieved context, the user graduated with a degree in Business Administration...",
+  "reasoning": "According to the retrieved context, the user graduated with...",
   "recall_time_seconds": 3.14,
   "generation_time_seconds": 8.87,
-  "num_results": 186,
-  "num_entities": 401
+  "num_results": 186
 }
 ```
 
@@ -444,49 +516,28 @@ curl -X POST http://localhost:5001/api/answer \
 
 ### POST /api/benchmark/run
 
-Run the full LongMemEval benchmark end-to-end (index → recall → answer → judge). This calls the existing `run_benchmark()` function from `longmemeval_benchmark.py`.
+**Full E2E benchmark** — index → recall → answer → judge (LLM-as-judge evaluation). Calls the existing `run_benchmark()` from `longmemeval_benchmark.py`.
 
 ```bash
-# Run full benchmark
+# Run 10 items
 curl -X POST http://localhost:5001/api/benchmark/run \
   -H "Content-Type: application/json" \
-  -d '{
-    "max_items": 10,
-    "thinking_budget": 500,
-    "max_tokens": 8192,
-    "context_format": "json"
-  }'
+  -d '{"max_items": 10, "context_format": "json"}'
 ```
 
 | Parameter | Type | Default | Description |
 |-----------|------|---------|-------------|
 | `max_items` | int | all | Max items to evaluate |
 | `max_questions_per_item` | int | all | Max questions per item |
-| `thinking_budget` | int | 500 | Search budget for spreading activation |
+| `thinking_budget` | int | 500 | Search budget |
 | `max_tokens` | int | 8192 | Max recall tokens |
-| `skip_ingestion` | bool | false | Skip indexing (use existing data) |
-| `context_format` | str | "json" | `json` or `structured` |
-| `results_filename` | str | benchmark_results.json | Output filename |
-| `max_concurrent_items` | int | 1 | Parallel item processing |
+| `skip_ingestion` | bool | false | Reuse existing indexed data |
+| `context_format` | str | `"json"` | `json` or `structured` |
+| `results_filename` | str | `benchmark_results.json` | Output file |
+| `max_concurrent_items` | int | 1 | Parallel processing |
 | `category` | str | null | Filter by question type |
 
-**Response:**
-```json
-{
-  "status": "completed",
-  "summary": {
-    "total_items": 10,
-    "overall_metrics": {
-      "accuracy": 72.5,
-      "total": 10,
-      "correct": 7,
-      "invalid": 1
-    },
-    "elapsed_seconds": 1234.56
-  },
-  "full_results": { ... }
-}
-```
+Results are saved to `hindsight-dev/benchmarks/longmemeval/results/<results_filename>`.
 
 ---
 
@@ -494,47 +545,50 @@ curl -X POST http://localhost:5001/api/benchmark/run \
 
 ### Quick Smoke Test (1 item)
 
-Tests the full pipeline: init → index → retrieve → answer. Takes ~10 minutes.
+End-to-end test of init → index → retrieve → answer. Takes ~10 minutes.
 
 ```bash
-# 1. Start the server
+# Terminal 1: Start the server
 source .env
-uv run --package hindsight-dev python hindsight-dev/benchmarks/longmemeval/flask_app.py &
+uv run --package hindsight-dev python hindsight-dev/benchmarks/longmemeval/flask_app.py
 
-# 2. Initialize
+# Terminal 2: Run the test sequence
+# Step 1: Initialize
 curl -s -X POST http://localhost:5001/api/init | python3 -m json.tool
 
-# 3. Index 1 item (53 sessions, ~8 min via Azure gpt-4o)
+# Step 2: Index 1 item (53 sessions, ~8 min)
 curl -s -X POST http://localhost:5001/api/index \
   -H "Content-Type: application/json" \
   -d '{"question_ids": ["e47becba"]}' | python3 -m json.tool
 
-# 4. Retrieve memories
+# Step 3: Retrieve memories
 curl -s -X POST http://localhost:5001/api/retrieve \
   -H "Content-Type: application/json" \
   -d '{"question": "What degree did I graduate with?", "question_id": "e47becba"}' \
-  | python3 -c "import sys,json; d=json.load(sys.stdin); print(f'Results: {d[\"num_results\"]}, Entities: {d[\"num_entities\"]}')"
+  | python3 -c "
+import sys, json
+d = json.load(sys.stdin)
+print(f'Results: {d[\"num_results\"]}, Entities: {d[\"num_entities\"]}')
+"
 
-# 5. Generate answer (expected: "Business Administration")
+# Step 4: Generate answer (expected: "Business Administration")
 curl -s -X POST http://localhost:5001/api/answer \
   -H "Content-Type: application/json" \
-  -d '{"question": "What degree did I graduate with?", "question_id": "e47becba", "question_date": "2023-05-30T00:00:00Z"}' \
-  | python3 -m json.tool
+  -d '{
+    "question": "What degree did I graduate with?",
+    "question_id": "e47becba",
+    "question_date": "2023-05-30T00:00:00Z"
+  }' | python3 -m json.tool
 ```
 
-**Expected output for step 5:**
-```json
-{
-  "answer": "Business Administration",
-  "recall_time_seconds": 3.14,
-  "generation_time_seconds": 8.87,
-  "num_results": 186
-}
-```
+**Expected results:**
+- Index: 53 sessions ingested
+- Retrieve: ~187 results, ~400 entities, ~17 chunks in ~4s
+- Answer: `"Business Administration"` (matches ground truth)
 
-### Category Test (10 items)
+### Category Test
 
-Run 10 items from one category with full benchmark evaluation:
+Test 10 items from a specific question category:
 
 ```bash
 curl -s -X POST http://localhost:5001/api/benchmark/run \
@@ -546,9 +600,11 @@ curl -s -X POST http://localhost:5001/api/benchmark/run \
   }' | python3 -m json.tool
 ```
 
+Available categories: `single-session-user`, `single-session-assistant`, `single-session-preference`, `multi-session`, `temporal-reasoning`, `knowledge-update`
+
 ### Full Benchmark (500 items)
 
-Run the complete LongMemEval benchmark. This will take several hours:
+Run the complete LongMemEval benchmark. **Estimated time: several hours.**
 
 ```bash
 curl -s -X POST http://localhost:5001/api/benchmark/run \
@@ -556,119 +612,146 @@ curl -s -X POST http://localhost:5001/api/benchmark/run \
   -d '{
     "thinking_budget": 500,
     "max_tokens": 8192,
-    "max_concurrent_items": 1,
-    "context_format": "json"
+    "max_concurrent_items": 1
   }' | python3 -m json.tool
 ```
 
-Results are saved to `hindsight-dev/benchmarks/longmemeval/results/benchmark_results.json`.
+### Using the Built-in Benchmark Script
 
-**Re-running failed questions only:**
+You can also run the benchmark directly (without the Flask bridge):
+
 ```bash
-# After an initial run, re-test only the questions that failed
-curl -s -X POST http://localhost:5001/api/benchmark/run \
-  -H "Content-Type: application/json" \
-  -d '{"skip_ingestion": true, "only_failed": true}' | python3 -m json.tool
+source .env
+./scripts/benchmarks/run-longmemeval.sh --max-instances 10
+```
+
+Or with Python directly:
+
+```bash
+source .env
+uv run python hindsight-dev/benchmarks/longmemeval/longmemeval_benchmark.py \
+  --max-instances 10 \
+  --context-format json
 ```
 
 ---
 
 ## Changing Azure Endpoints
 
-To switch to a different Azure OpenAI resource:
-
-### 1. Update the endpoint
+### Switch to a different resource
 
 ```bash
-# Edit .env or export directly:
+# 1. Update endpoint
 export HINDSIGHT_API_LLM_AZURE_ENDPOINT=https://new-resource.cognitiveservices.azure.com/
+
+# 2. If different tenant, update auth
+az login --tenant <new-tenant-id>
+export AZURE_TENANT_ID=<new-tenant-id>
+
+# 3. Restart the Flask server and re-init
+curl -X POST http://localhost:5001/api/init
 ```
 
-### 2. Change the model / deployment
+### Switch model or deployment
 
 ```bash
-# If deploying a different model:
 export HINDSIGHT_API_LLM_MODEL=gpt-4o-mini
-export HINDSIGHT_API_LLM_AZURE_DEPLOYMENT_NAME=my-gpt4o-mini-deployment
+export HINDSIGHT_API_LLM_AZURE_DEPLOYMENT_NAME=my-custom-deployment
 
-# Adjust completion token limit for the new model
+# Adjust token limits for the new model
 export HINDSIGHT_API_LLM_AZURE_MAX_COMPLETION_TOKENS=16384
 export HINDSIGHT_API_RETAIN_MAX_COMPLETION_TOKENS=16000
 ```
 
-### 3. Switch tenants
-
-```bash
-# If the new resource is in a different tenant:
-az login --tenant <new-tenant-id>
-az account set -s "<new-subscription>"
-export AZURE_TENANT_ID=<new-tenant-id>
-```
-
-### 4. Switch to API key auth
+### Switch to API key auth
 
 ```bash
 export HINDSIGHT_API_LLM_AZURE_USE_ENTRA_ID=false
-export HINDSIGHT_API_LLM_API_KEY=<new-api-key>
+export HINDSIGHT_API_LLM_API_KEY=<your-api-key>
 ```
 
-### 5. Restart the Flask server
+### Re-index with new model
+
+Data persists in pg0. Use `"force": true` to re-ingest with the new model:
 
 ```bash
-# Stop the old server (Ctrl+C), then:
-source .env
-uv run --package hindsight-dev python hindsight-dev/benchmarks/longmemeval/flask_app.py
+curl -X POST http://localhost:5001/api/index \
+  -H "Content-Type: application/json" \
+  -d '{"force": true, "max_items": 5}'
 ```
-
-### 6. Re-initialize
-
-```bash
-curl -X POST http://localhost:5001/api/init
-```
-
-The embedded pg0 database persists data across restarts. Previously ingested data will still be available. Use `"force": true` in `/api/index` to re-ingest with the new model.
 
 ---
 
 ## Environment Variables Reference
 
-### Azure Provider (Required)
+### Core Azure Config
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `HINDSIGHT_API_LLM_PROVIDER` | `groq` | Set to `azure` for Azure Foundry |
-| `HINDSIGHT_API_LLM_MODEL` | `gpt-4o` | Model name (also used as deployment name) |
-| `HINDSIGHT_API_LLM_AZURE_ENDPOINT` | — | Azure resource endpoint URL |
-| `HINDSIGHT_API_LLM_AZURE_API_VERSION` | `2024-12-01-preview` | Azure OpenAI API version |
-| `HINDSIGHT_API_LLM_AZURE_DEPLOYMENT_NAME` | (model name) | Override deployment name if different from model |
-| `HINDSIGHT_API_LLM_AZURE_USE_ENTRA_ID` | `true` | Use Entra ID auth (`true`) or API key (`false`) |
+| `HINDSIGHT_API_LLM_PROVIDER` | `groq` | Set to `azure` |
+| `HINDSIGHT_API_LLM_MODEL` | `gpt-4o` | Model / deployment name |
+| `HINDSIGHT_API_LLM_AZURE_ENDPOINT` | — | Azure resource URL (required) |
+| `HINDSIGHT_API_LLM_AZURE_API_VERSION` | `2024-12-01-preview` | API version |
+| `HINDSIGHT_API_LLM_AZURE_DEPLOYMENT_NAME` | (model name) | Override if deployment name differs |
+| `HINDSIGHT_API_LLM_AZURE_USE_ENTRA_ID` | `true` | `true` = Entra ID, `false` = API key |
 
 ### Authentication
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `HINDSIGHT_API_LLM_API_KEY` | — | API key (required when `ENTRA_ID=false`) |
-| `AZURE_TENANT_ID` | — | Force token from specific tenant (cross-tenant auth) |
+| `HINDSIGHT_API_LLM_API_KEY` | — | Required when `USE_ENTRA_ID=false` |
+| `AZURE_TENANT_ID` | — | Force token from specific tenant |
 
 ### Token Limits
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `HINDSIGHT_API_RETAIN_MAX_COMPLETION_TOKENS` | `64000` | Max tokens for fact extraction. Set to `16000` for Azure gpt-4o |
-| `HINDSIGHT_API_LLM_AZURE_MAX_COMPLETION_TOKENS` | `16384` | Cap applied to all Azure LLM calls |
+| `HINDSIGHT_API_RETAIN_MAX_COMPLETION_TOKENS` | `64000` | Set to `16000` for Azure gpt-4o |
+| `HINDSIGHT_API_LLM_AZURE_MAX_COMPLETION_TOKENS` | `16384` | Auto-cap for all Azure calls |
 
-### Database
-
-| Variable | Default | Description |
-|----------|---------|-------------|
-| `HINDSIGHT_API_DATABASE_URL` | `pg0` | Database URL. `pg0` = embedded PostgreSQL |
-
-### Flask
+### Database & Server
 
 | Variable | Default | Description |
 |----------|---------|-------------|
+| `HINDSIGHT_API_DATABASE_URL` | `pg0` | `pg0` = embedded PostgreSQL |
 | `FLASK_PORT` | `5000` | Flask server port |
-| `FLASK_DEBUG` | `false` | Enable Flask debug mode |
+| `FLASK_DEBUG` | `false` | Debug mode |
+
+---
+
+## Project Structure
+
+```
+hindsight/
+├── .env.azure.example           # Azure config template
+├── hindsight-api-slim/          # Core API package
+│   └── hindsight_api/
+│       ├── config.py            # Configuration & env vars
+│       └── engine/
+│           ├── memory_engine.py # MemoryEngine (retain, recall, reflect)
+│           ├── llm_wrapper.py   # LLM provider factory
+│           └── providers/
+│               ├── azure_openai_llm.py      # ★ Azure Foundry provider
+│               ├── openai_compatible_llm.py # OpenAI/Groq/Ollama
+│               ├── anthropic_llm.py         # Anthropic Claude
+│               └── gemini_llm.py            # Google Gemini
+├── hindsight-all/               # Server + embedded client
+│   └── hindsight/
+│       ├── server.py            # Background Hindsight server
+│       └── embedded.py          # HindsightEmbedded client
+├── hindsight-dev/               # Dev tools & benchmarks
+│   └── benchmarks/
+│       └── longmemeval/
+│           ├── AZURE_SETUP.md           # ★ This guide
+│           ├── flask_app.py             # ★ Flask bridge (8 endpoints)
+│           ├── longmemeval_benchmark.py # Benchmark runner
+│           └── datasets/               # Auto-downloaded dataset
+└── scripts/
+    └── benchmarks/
+        └── run-longmemeval.sh   # CLI benchmark runner
+```
+
+Files marked with ★ were added by the Azure Foundry feature branch.
 
 ---
 
@@ -676,47 +759,44 @@ The embedded pg0 database persists data across restarts. Previously ingested dat
 
 ### "Tenant provided in token does not match resource token"
 
-Your Azure CLI token is from a different tenant than the resource.
+Your `az login` tenant doesn't match the resource's tenant.
 
 ```bash
-# Find which tenant your resource is in
+# Find your resource's tenant
 az cognitiveservices account list -o table
 
 # Login to the correct tenant
 az login --tenant <resource-tenant-id>
-az account set -s "<subscription-name>"
+az account set -s "<subscription>"
 
-# Or set the tenant ID env var
+# Or set env var
 export AZURE_TENANT_ID=<resource-tenant-id>
 ```
 
 ### "Azure CLI not found on path"
 
-`DefaultAzureCredential` can't find `az`. Ensure it's on your PATH:
+`DefaultAzureCredential` can't find `az`. In WSL:
 
 ```bash
-# WSL: add Windows az CLI to PATH
+# Option 1: Use Windows az CLI
 export PATH="$PATH:/mnt/c/Program Files/Microsoft SDKs/Azure/CLI2/wbin"
 
-# Or install az CLI natively in WSL
+# Option 2: Install az CLI natively in WSL
 curl -sL https://aka.ms/InstallAzureCLIDeb | sudo bash
 ```
 
-### "max_tokens is too large"
+### "max_tokens is too large: 32768"
 
-Your Azure deployment has a lower token limit than expected.
+Azure deployment has lower token limits. Set:
 
 ```bash
-# Cap all Azure LLM calls (default: 16384)
 export HINDSIGHT_API_LLM_AZURE_MAX_COMPLETION_TOKENS=16384
-
-# Cap the retain (fact extraction) operation specifically
 export HINDSIGHT_API_RETAIN_MAX_COMPLETION_TOKENS=16000
 ```
 
 ### "Invalid LLM provider: azure"
 
-You're on an older version of the code. Ensure you're on the `feature/azure-foundry-openai` branch:
+Not on the Azure feature branch:
 
 ```bash
 git checkout feature/azure-foundry-openai
@@ -725,14 +805,12 @@ uv sync --package hindsight-dev
 
 ### Slow indexing
 
-Each session is processed through the LLM for fact extraction. Tips:
-- Use a faster model deployment (e.g., `gpt-4o-mini`)
-- Index fewer items for testing: `{"max_items": 5}`
-- Data persists in pg0 — use `"skip_ingestion": true` to skip re-indexing
+Each session goes through LLM fact extraction. Tips:
+- Use `gpt-4o-mini` for faster indexing
+- Index fewer items: `{"max_items": 5}`
+- Data persists in pg0 — skip re-indexing with `"skip_ingestion": true`
 
-### pg0 database issues
-
-The embedded PostgreSQL stores data in `~/.pg0/`. To reset:
+### Reset embedded database
 
 ```bash
 rm -rf ~/.pg0/instances/hindsight*
